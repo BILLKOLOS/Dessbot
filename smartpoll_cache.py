@@ -89,7 +89,7 @@ async def monitor_accounts(usernames, event):
     while True:
         for username in usernames:
             add_task_to_queue(monitor_account, username, last_tweet_ids, last_reply_ids, last_like_ids, event)
-        await asyncio.sleep(60)  # Check for updates every 60 seconds
+        await asyncio.sleep(15)  # Check for updates every 60 seconds
 
 async def monitor_account(username, last_tweet_ids, last_reply_ids, last_like_ids, event):
     user_id = await fetch_user_id(username)
@@ -132,6 +132,7 @@ async def fetch_user_id(username):
             backoff_time = min(backoff_time * 2, 320)  # Exponential backoff
 
     return None
+
 
 # Function to shorten text to 4 lines
 def shorten_text(text, max_lines=4):
