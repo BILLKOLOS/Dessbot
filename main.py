@@ -32,7 +32,7 @@ logging.debug(f"Telegram Bot Token: {telegram_bot_token}")
 telegram_client = TelegramClient('bot', telegram_api_id, telegram_api_hash).start(bot_token=telegram_bot_token)
 
 # Define admin user IDs
-admin_user_ids = [7443937029, 7104246753]  # Replace with actual admin user IDs
+admin_user_ids = [7443937029, 7104246753, 5810699032, 1254056054]  # Replace with actual admin user IDs
 
 # Dictionary to keep track of each user's monitoring state
 user_monitoring_states = {}
