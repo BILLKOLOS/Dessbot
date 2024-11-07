@@ -119,7 +119,7 @@ async def monitor_accounts(usernames, event):
     while True:
         for username in usernames:
             add_task_to_queue(monitor_account, username, last_tweet_ids, last_reply_ids, last_like_ids, event)
-        await asyncio.sleep(20)  # Check for updates every 60 seconds
+        await asyncio.sleep(30)  # Check for updates every 1 seconds
 
 async def monitor_account(username, last_tweet_ids, last_reply_ids, last_like_ids, event):
     user_id = await fetch_user_id(username)
