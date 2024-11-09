@@ -18,7 +18,6 @@ load_dotenv()
 
 # Twitter API setup
 bearer_token = os.getenv('TWITTER_BEARER_TOKEN')
-oauth_token = os.getenv('TWITTER_OAUTH_TOKEN')
 
 # Telegram bot setup
 telegram_api_id = os.getenv('TELEGRAM_API_ID')
@@ -119,7 +118,6 @@ async def grant_permission_handler(event):
     else:
         await event.respond("You don't have permission to grant access.")
 
-
 # Initialize cache and message queue
 tweet_cache = {}
 cache_duration = timedelta(minutes=15)  # Cache duration
@@ -150,22 +148,20 @@ def stop_worker_thread():
     tweet_queue.put(None)
     worker_thread.join()
 
-# Monitor multiple accounts for tweets, replies, and likes
+# Monitor multiple accounts for tweets and replies
 async def monitor_accounts(usernames, event):
     last_tweet_ids = {username: None for username in usernames}
     last_reply_ids = {username: None for username in usernames}
-    last_like_ids = {username: None for username in usernames}
     while True:
         for username in usernames:
-            add_task_to_queue(monitor_account, username, last_tweet_ids, last_reply_ids, last_like_ids, event)
-        await asyncio.sleep(30)  # Check for updates every 1 seconds
+            add_task_to_queue(monitor_account, username, last_tweet_ids, last_reply_ids, event)
+        await asyncio.sleep(90)  # Check for updates every 1 seconds
 
-async def monitor_account(username, last_tweet_ids, last_reply_ids, last_like_ids, event):
+async def monitor_account(username, last_tweet_ids, last_reply_ids, event):
     user_id = await fetch_user_id(username)
     if user_id:
         add_task_to_queue(fetch_tweets, user_id, username, last_tweet_ids, event)
         add_task_to_queue(fetch_replies, user_id, username, last_reply_ids, event)
-        add_task_to_queue(fetch_likes, user_id, username, last_like_ids, event)
 
 async def fetch_user_id(username):
     headers = {
@@ -175,10 +171,10 @@ async def fetch_user_id(username):
     backoff_time = 10
     while True:
         user_response = requests.get(user_url, headers=headers)
-        
+
         logging.debug(f"Twitter API response status code: {user_response.status_code}")
         logging.debug(f"Twitter API response headers: {user_response.headers}")
-        
+
         if user_response.status_code == 429:
             reset_time = int(user_response.headers["x-rate-limit-reset"])
             current_time = time.time()
@@ -224,96 +220,57 @@ async def fetch_tweets(user_id, username, last_tweet_ids, event):
         } if last_tweet_ids[username] else {"max_results": 10}
         tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets"
         tweets_response = requests.get(tweets_url, headers=headers, params=params)
-        
+
         if tweets_response.status_code == 200:
             tweets = tweets_response.json().get('data', [])
             tweet_cache[username] = {'data': tweets, 'timestamp': now}
         else:
             logging.error(f"Failed to fetch tweets: {tweets_response.json()}")
             return
-    
+
     if tweets:
         for tweet in tweets:
-            text = shorten_text(tweet['text'])
-            tweet_link = f"https://twitter.com/{username}/status/{tweet['id']}"
-            timestamp = time.strftime("%I:%M %p", time.localtime(time.time()))
+            tweet_id = tweet['id']
+            if last_tweet_ids[username] is None or tweet_id > last_tweet_ids[username]:
+                text = tweet['text']
+                shortened_text = shorten_text(text)
+                message = f"New tweet from @{username}:\n\n{shortened_text}"
+                await event.respond(message)
+                last_tweet_ids[username] = tweet_id
 
-            await event.respond(f"Tweet | {username} | [Post Link]({tweet_link})\n\n"
-                                f"{text}\n\n"
-                                f"X (formerly Twitter)\n"
-                                f"@{username} on X\n"
-                                f"Read more: [View on X]({tweet_link})\n"
-                                f"{timestamp}")
-            
-        last_tweet_ids[username] = tweets[0]['id']
+# Fetch replies and send them to Telegram with shortened text
 async def fetch_replies(user_id, username, last_reply_ids, event):
-    headers = {
-        "Authorization": f"Bearer {bearer_token}"
-    }
-    params = {
-        "since_id": last_reply_ids[username],
-        "max_results": 10
-    } if last_reply_ids[username] else {"max_results": 10}
-    replies_url = f"https://api.twitter.com/2/tweets/search/recent?query=from:{user_id}&tweet.fields=conversation_id,author_id,in_reply_to_user_id"
-    replies_response = requests.get(replies_url, headers=headers, params=params)
-    if replies_response.status_code == 200:
-        replies = replies_response.json().get('data', [])
-        if replies:
-            for reply in replies:
-                in_reply_to_user_id = reply.get('in_reply_to_user_id')
-                tweet_link = f"https://twitter.com/{username}/status/{reply['id']}"
-                timestamp = time.strftime("%I:%M %p", time.localtime(time.time()))
-                if in_reply_to_user_id:
-                    post_owner = await fetch_username(in_reply_to_user_id)
-                    await event.respond(f"Reply | {username} | [Post Link]({tweet_link})\n\n"
-                                        f"{reply['text']}\n\n"
-                                        f"Reply to @{post_owner}\n"
-                                        f"Read more: [View on X]({tweet_link})\n"
-                                        f"{timestamp}")
-                else:
-                    await event.respond(f"Reply | @{username} | [Post Link]({tweet_link})\n\n"
-                                        f"{reply['text']}\n"
-                                        f"Read more: [View on X]({tweet_link})\n"
-                                        f"{timestamp}")
-            last_reply_ids[username] = replies[0]['id']
+    now = datetime.now()
+    if f"{username}_replies" in tweet_cache and now - tweet_cache[f"{username}_replies"]['timestamp'] < cache_duration:
+        replies = tweet_cache[f"{username}_replies"]['data']
+    else:
+        headers = {
+            "Authorization": f"Bearer {bearer_token}"
+        }
+        params = {
+            "since_id": last_reply_ids[username],
+            "max_results": 10
+        } if last_reply_ids[username] else {"max_results": 10}
+        replies_url = f"https://api.twitter.com/2/users/{user_id}/mentions"
+        replies_response = requests.get(replies_url, headers=headers, params=params)
 
+        if replies_response.status_code == 200:
+            replies = replies_response.json().get('data', [])
+            tweet_cache[f"{username}_replies"] = {'data': replies, 'timestamp': now}
+        else:
+            logging.error(f"Failed to fetch replies: {replies_response.json()}")
+            return
 
-async def fetch_username(user_id):
-    headers = {
-        "Authorization": f"Bearer {bearer_token}"
-    }
-    url = f"https://api.twitter.com/2/users/{user_id}"
-    response = requests.get(url, headers=headers)
-    if response.status_code == 200:
-        user_data = response.json().get('data', {})
-        username = user_data.get('username', 'unknown_user')
-        return username
-    return 'unknown_user'
+    if replies:
+        for reply in replies:
+            reply_id = reply['id']
+            if last_reply_ids[username] is None or reply_id > last_reply_ids[username]:
+                text = reply['text']
+                shortened_text = shorten_text(text)
+                message = f"New reply to @{username}:\n\n{shortened_text}"
+                await event.respond(message)
+                last_reply_ids[username] = reply_id
 
-async def fetch_likes(user_id, username, last_like_ids, event):
-    headers = {
-        "Authorization": f"Bearer {oauth_token}"
-    }
-    params = {
-        "since_id": last_like_ids[username],
-        "max_results": 10
-    } if last_like_ids[username] else {"max_results": 10}
-    likes_url = f"https://api.twitter.com/2/users/{user_id}/liked_tweets"
-    likes_response = requests.get(likes_url, headers=headers, params=params)
-    if likes_response.status_code == 200:
-        likes = likes_response.json().get('data', [])
-        if likes:
-            for like in likes:
-                tweet_link = f"https://twitter.com/{username}/status/{like['id']}"
-                timestamp = time.strftime("%I:%M %p", time.localtime(time.time()))
-                await event.respond(f"Like | @{username} | [Post Link]({tweet_link})\n\n"
-                                    f"{like['text']}\n"
-                                    f"Read more: [View on X]({tweet_link})\n"
-                                    f"{timestamp}")
-            last_like_ids[username] = likes[0]['id']
-
-if __name__ == "__main__":
-    telegram_client.run_until_disconnected()
-
-    # Gracefully stop the worker thread
-    stop_worker_thread()
+# Start Telegram client
+telegram_client.start()
+telegram_client.run_until_disconnected()
