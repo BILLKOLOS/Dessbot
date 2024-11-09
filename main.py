@@ -7,8 +7,9 @@ from dotenv import load_dotenv
 from user_manager import save_chat_id, get_user_chat_ids
 import time
 from datetime import datetime, timedelta
-import queue
-import threading
+import pytz  # Import s for timezone handling
+import threading  # Import threading for multithreading
+import queue  # Import queue for task queuing
 
 # Setup logging
 logging.basicConfig(level=logging.DEBUG)
@@ -24,10 +25,6 @@ telegram_api_id = os.getenv('TELEGRAM_API_ID')
 telegram_api_hash = os.getenv('TELEGRAM_API_HASH')
 telegram_bot_token = os.getenv('TELEGRAM_ACCESS_TOKEN')
 
-logging.debug(f"Telegram API ID: {telegram_api_id}")
-logging.debug(f"Telegram API Hash: {telegram_api_hash}")
-logging.debug(f"Telegram Bot Token: {telegram_bot_token}")
-
 telegram_client = TelegramClient('bot', telegram_api_id, telegram_api_hash).start(bot_token=telegram_bot_token)
 
 # Define admin user IDs
@@ -37,6 +34,72 @@ admin_user_ids = [7443937029, 7104246753, 5810699032, 1254056054]  # Replace wit
 user_monitoring_states = {}
 user_permissions = {}
 
+# Function to convert timestamp to New York time
+def convert_to_new_york_time(timestamp):
+    utc_time = datetime.utcfromtimestamp(timestamp)
+    new_york_tz = pytz.timezone('America/New_York')
+    return utc_time.replace(tzinfo=pytz.utc).astimezone(new_york_tz)
+
+# Function to handle /start command
+@telegram_client.on(events.NewMessage(pattern='/start'))
+async def start_handler(event):
+    save_chat_id(event.chat_id)
+    user_monitoring_states[event.chat_id] = False  # Initialize monitoring state for the user
+    user_permissions[event.chat_id] = event.chat_id in admin_user_ids  # Grant permission if the user is admin
+    
+    await event.respond(
+        "Welcome! Please choose an option from the menu below.",
+        buttons=[
+            [Button.text('🌟 Start Monitoring Twitter Accounts'), Button.text('🚫 Stop Monitoring')],
+            [Button.text('ℹ️ Help'), Button.text('⚙️ Settings')]
+        ]
+    )
+    print(f"Added chat ID: {event.chat_id}")
+
+# Handler for "Start Monitoring Twitter Accounts" button
+@telegram_client.on(events.NewMessage(pattern='🌟 Start Monitoring Twitter Accounts'))
+async def start_monitoring(event):
+    if event.chat_id in admin_user_ids:
+        await event.respond(
+            "Are you sure you want to start monitoring Twitter accounts? Please confirm by clicking 'Yes' or 'No'.",
+            buttons=[ [Button.text('✅ Yes'), Button.text('❌ No')] ]
+        )
+    else:
+        await event.respond("You don't have permission to start monitoring.")
+
+# Handler for confirming "Start Monitoring"
+@telegram_client.on(events.NewMessage(pattern='✅ Yes'))
+async def confirm_start_monitoring(event):
+    user_monitoring_states[event.chat_id] = True  # Set monitoring state to True
+    await event.respond("Monitoring has been started! Please enter Twitter usernames to monitor, separated by commas.")
+
+# Handler for canceling "Start Monitoring"
+@telegram_client.on(events.NewMessage(pattern='❌ No'))
+async def cancel_start_monitoring(event):
+    await event.respond("Monitoring was not started. If you change your mind, click 'Start Monitoring'.")
+
+# Handler for "Stop Monitoring" button
+@telegram_client.on(events.NewMessage(pattern='🚫 Stop Monitoring'))
+async def stop_monitoring(event):
+    if event.chat_id in admin_user_ids:
+        await event.respond(
+            "Are you sure you want to stop monitoring? Please confirm by clicking 'Yes' or 'No'.",
+            buttons=[ [Button.text('✅ Yes'), Button.text('❌ No')] ]
+        )
+    else:
+        await event.respond("You don't have permission to stop monitoring.")
+
+# Handler for confirming "Stop Monitoring"
+@telegram_client.on(events.NewMessage(pattern='✅ Yes'))
+async def confirm_stop_monitoring(event):
+    user_monitoring_states[event.chat_id] = False  # Set monitoring state to False
+    await event.respond("Monitoring has been stopped.")
+
+# Handler for canceling "Stop Monitoring"
+@telegram_client.on(events.NewMessage(pattern='❌ No'))
+async def cancel_stop_monitoring(event):
+    await event.respond("Monitoring was not stopped. If you change your mind, click 'Stop Monitoring'.")
+
 # Function to get user IDs (temporary function)
 @telegram_client.on(events.NewMessage(pattern='/getid'))
 async def get_user_id(event):
@@ -44,61 +107,52 @@ async def get_user_id(event):
     await event.respond(f"Your User ID is: {user_id}")
     print(f"User ID: {user_id}")
 
-# Handler for /start command
-@telegram_client.on(events.NewMessage(pattern='/start'))
-async def handler(event):
-    save_chat_id(event.chat_id)
-    user_monitoring_states[event.chat_id] = False  # Initialize monitoring state for the user
-    user_permissions[event.chat_id] = event.chat_id in admin_user_ids  # Grant permission if the user is admin
-    await event.respond(
-        "Welcome! Please choose an option from the menu below.",
-        buttons=[
-            [Button.text('🌟 Monitor Twitter Accounts'), Button.text('🚫 Stop Monitoring')],
-            [Button.text('ℹ️ Help'), Button.text('⚙️ Settings')]
-        ]
-    )
-    print(f"Added chat ID: {event.chat_id}")
-
-# Handler for Monitor Twitter Accounts button
-@telegram_client.on(events.NewMessage(pattern='🌟 Monitor Twitter Accounts'))
-async def monitor_handler(event):
-    if event.chat_id in admin_user_ids:
-        for user_id in user_permissions.keys():
-            user_monitoring_states[user_id] = True  # Set monitoring state to True for all users with permission
-        await event.respond("Enter Twitter usernames to monitor (comma-separated):")
-    else:
-        await event.respond("You don't have permission to start monitoring. Please contact an admin.")
-
-# Handler for Stop Monitoring button
-@telegram_client.on(events.NewMessage(pattern='🚫 Stop Monitoring'))
-async def stop_monitoring_handler(event):
-    if event.chat_id in admin_user_ids:
-        for user_id in user_permissions.keys():
-            user_monitoring_states[user_id] = False  # Set monitoring state to False for all users with permission
-        await event.respond("Stopping monitoring...")
-        print(f"Monitoring stopped by admin: {event.chat_id}")
-    else:
-        await event.respond("You don't have permission to stop monitoring. Please contact an admin.")
-
-# Handler for Help button
+# Handler for "Help" button
 @telegram_client.on(events.NewMessage(pattern='ℹ️ Help'))
 async def help_handler(event):
-    await event.respond("Help Information: \n1. To monitor Twitter accounts, click 'Monitor Twitter Accounts'. \n2. To stop monitoring, click 'Stop Monitoring'. \n3. For settings, click 'Settings'.")
+    await event.respond(
+        "Help Information: \n1. To start monitoring Twitter accounts, click 'Start Monitoring'. \n"
+        "2. To stop monitoring, click 'Stop Monitoring'. \n3. For settings, click 'Settings'."
+    )
 
 # Handler for Settings button
 @telegram_client.on(events.NewMessage(pattern='⚙️ Settings'))
 async def settings_handler(event):
-    await event.respond("Settings: Here you can configure your preferences.")
+    await event.respond("Settings: Here you can configure your preferences. More options coming soon!")
 
-# Handler for other messages (e.g., Twitter usernames input)
+# Handler for user input of Twitter usernames to monitor
 @telegram_client.on(events.NewMessage)
 async def username_handler(event):
-    if user_monitoring_states.get(event.chat_id, False) and user_permissions.get(event.chat_id, False):
+    if user_monitoring_states.get(event.chat_id, False):
         usernames = event.message.message.strip().replace('@', '').split(',')
-        await event.respond(f"Monitoring accounts: {', '.join(usernames)}...")
-        asyncio.create_task(monitor_accounts(usernames, event))
+        invalid_usernames = []
+        valid_usernames = []
+        
+        # Basic validation: ensure usernames are valid
+        for username in usernames:
+            if username and username not in valid_usernames:
+                valid_usernames.append(username)
+            else:
+                invalid_usernames.append(username)
+        
+        if valid_usernames:
+            await event.respond(f"Monitoring the following accounts: {', '.join(valid_usernames)}")
+            asyncio.create_task(monitor_accounts(valid_usernames, event))
+        
+        if invalid_usernames:
+            await event.respond(f"The following usernames were invalid or already added: {', '.join(invalid_usernames)}")
+            await event.respond("Please try again with valid usernames.")
     else:
-        await event.respond("Monitoring is currently stopped or you don't have permission. Please contact an admin.")
+        await event.respond("You haven't started monitoring yet. Click 'Start Monitoring' to begin.")
+
+# Modify this part to check if the monitoring is still ongoing or already stopped
+@telegram_client.on(events.NewMessage(pattern='/status'))
+async def check_status(event):
+    if user_monitoring_states.get(event.chat_id, False):
+        await event.respond("Monitoring is active. You will receive updates shortly.")
+    else:
+        await event.respond("Monitoring is not active. Please start monitoring by using the 'Start Monitoring' option.")
+
 
 # Function for admins to grant permission to other users
 async def grant_permission(admin_id, user_id):
@@ -155,7 +209,7 @@ async def monitor_accounts(usernames, event):
     while True:
         for username in usernames:
             add_task_to_queue(monitor_account, username, last_tweet_ids, last_reply_ids, event)
-        await asyncio.sleep(90)  # Check for updates every 1 seconds
+        await asyncio.sleep(90)  # Check for updates every 90 seconds
 
 async def monitor_account(username, last_tweet_ids, last_reply_ids, event):
     user_id = await fetch_user_id(username)
@@ -219,58 +273,59 @@ async def fetch_tweets(user_id, username, last_tweet_ids, event):
             "max_results": 10
         } if last_tweet_ids[username] else {"max_results": 10}
         tweets_url = f"https://api.twitter.com/2/users/{user_id}/tweets"
-        tweets_response = requests.get(tweets_url, headers=headers, params=params)
+        
+        while True:  # Keep retrying on failure
+            tweet_response = requests.get(tweets_url, headers=headers, params=params)
+            if tweet_response.status_code == 200:
+                tweets = tweet_response.json()['data']
+                tweet_cache[username] = {'data': tweets, 'timestamp': now}
+                break
+            elif tweet_response.status_code == 429:  # Rate limit reached
+                reset_time = int(tweet_response.headers.get("x-rate-limit-reset", time.time()))
+                sleep_time = reset_time - time.time()
+                logging.info(f"Rate limit hit while fetching tweets for {username}. Sleeping for {sleep_time} seconds.")
+                await asyncio.sleep(sleep_time)
+            else:
+                logging.error(f"Failed to fetch tweets for {username}: {tweet_response.text}")
+                await asyncio.sleep(10)  # Exponential backoff can be implemented if needed
+                break
 
-        if tweets_response.status_code == 200:
-            tweets = tweets_response.json().get('data', [])
-            tweet_cache[username] = {'data': tweets, 'timestamp': now}
-        else:
-            logging.error(f"Failed to fetch tweets: {tweets_response.json()}")
-            return
+    for tweet in tweets:
+        last_tweet_ids[username] = tweet['id']
+        await event.respond(f"New tweet from {username}: \n{shorten_text(tweet['text'])}")
+        logging.info(f"Tweet from {username}: {tweet['text']}")
 
-    if tweets:
-        for tweet in tweets:
-            tweet_id = tweet['id']
-            if last_tweet_ids[username] is None or tweet_id > last_tweet_ids[username]:
-                text = tweet['text']
-                shortened_text = shorten_text(text)
-                message = f"New tweet from @{username}:\n\n{shortened_text}"
-                await event.respond(message)
-                last_tweet_ids[username] = tweet_id
-
-# Fetch replies and send them to Telegram with shortened text
+# Fetch replies for tweets and send them to Telegram
 async def fetch_replies(user_id, username, last_reply_ids, event):
-    now = datetime.now()
-    if f"{username}_replies" in tweet_cache and now - tweet_cache[f"{username}_replies"]['timestamp'] < cache_duration:
-        replies = tweet_cache[f"{username}_replies"]['data']
-    else:
-        headers = {
-            "Authorization": f"Bearer {bearer_token}"
-        }
-        params = {
-            "since_id": last_reply_ids[username],
-            "max_results": 10
-        } if last_reply_ids[username] else {"max_results": 10}
-        replies_url = f"https://api.twitter.com/2/users/{user_id}/mentions"
-        replies_response = requests.get(replies_url, headers=headers, params=params)
-
-        if replies_response.status_code == 200:
-            replies = replies_response.json().get('data', [])
-            tweet_cache[f"{username}_replies"] = {'data': replies, 'timestamp': now}
+    headers = {
+        "Authorization": f"Bearer {bearer_token}"
+    }
+    replies_url = f"https://api.twitter.com/2/tweets/search/recent?query=to:{username}"
+    
+    while True:  # Keep retrying on failure
+        reply_response = requests.get(replies_url, headers=headers)
+        if reply_response.status_code == 200:
+            replies = reply_response.json()['data']
+            break
+        elif reply_response.status_code == 429:  # Rate limit reached
+            reset_time = int(reply_response.headers.get("x-rate-limit-reset", time.time()))
+            sleep_time = reset_time - time.time()
+            logging.info(f"Rate limit hit while fetching replies for {username}. Sleeping for {sleep_time} seconds.")
+            await asyncio.sleep(sleep_time)
         else:
-            logging.error(f"Failed to fetch replies: {replies_response.json()}")
-            return
+            logging.error(f"Failed to fetch replies for {username}: {reply_response.text}")
+            await asyncio.sleep(10)  # Exponential backoff can be implemented if needed
+            break
 
-    if replies:
-        for reply in replies:
-            reply_id = reply['id']
-            if last_reply_ids[username] is None or reply_id > last_reply_ids[username]:
-                text = reply['text']
-                shortened_text = shorten_text(text)
-                message = f"New reply to @{username}:\n\n{shortened_text}"
-                await event.respond(message)
-                last_reply_ids[username] = reply_id
+    for reply in replies:
+        if reply['id'] != last_reply_ids[username]:
+            last_reply_ids[username] = reply['id']
+            await event.respond(f"New reply to {username}: \n{shorten_text(reply['text'])}")
+            logging.info(f"Reply to {username}: {reply['text']}")
 
-# Start Telegram client
-telegram_client.start()
-telegram_client.run_until_disconnected()
+# Run the bot
+async def main():
+    await telegram_client.run_until_disconnected()
+
+if __name__ == '__main__':
+    asyncio.run(main())
